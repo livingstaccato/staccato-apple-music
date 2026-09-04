@@ -14,17 +14,22 @@ This repo does not own rendering. `staccato-hugo` or the consuming site renders 
 
 ## How it reads a playlist
 
-Open Graph, and nothing else. No Apple Developer account, no token, no key.
+Two sources on the playlist page, neither requiring an Apple Developer account,
+a token or a key:
 
-That is not the first choice, it is the only one that works. Apple emits full
-JSON-LD for its own editorial playlists and none at all for user playlists, and
-its oEmbed endpoint answers HTTP 500 for them. The Open Graph block is the one
-documented surface a shared user playlist exposes, because Apple maintains it
-for link previews.
+- **Open Graph tags** give the title, curator, canonical URL and track count.
+  Apple maintains them for link previews, so they are stable.
+- **Apple's serialized server data** gives the tracks: title, artist, composer
+  and duration.
 
-The track list is deliberately not synced. It is not in the Open Graph data, and
-the embed player renders it live and stays current — which a copy of three
-hundred rows in a git repository would not.
+Apple publishes JSON-LD only for its own editorial playlists, and its oEmbed
+endpoint answers HTTP 500 for user playlists, so neither is available here.
+
+The serialized data is internal and undocumented, so nothing hardcodes a path
+into it: the reader takes the longest array whose every object carries a title,
+an artist and a duration. An empty result is valid — the page keeps its title
+and its link, and a playlist rendering without its tracks beats a sync that
+fails.
 
 ## Content Contract
 
