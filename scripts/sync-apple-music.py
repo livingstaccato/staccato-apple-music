@@ -80,6 +80,55 @@ def open_graph(page: str) -> dict[str, str]:
     return found
 
 
+def find_tracks(page: str) -> list[dict[str, Any]]:
+    """Every track on the page, from Apple's serialized server data.
+
+    The Open Graph block carries no tracks, so this is the only way to render a
+    playlist without an Apple Developer token. The structure is internal and
+    undocumented, so nothing here hardcodes a path into it: it looks for the
+    longest list of objects that all carry a title, an artist and a duration,
+    which survives Apple renumbering their sections.
+
+    An empty list is a valid answer. The page still has a title and a link, and
+    a playlist that renders without its tracks beats a sync that fails.
+    """
+    m = re.search(r'id="serialized-server-data"[^>]*>(.*?)</script>', page, re.S)
+    if not m:
+        return []
+    try:
+        blob = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        log.warning("  serialized data did not parse; tracks omitted")
+        return []
+
+    best: list[dict[str, Any]] = []
+
+    def walk(node: Any) -> None:
+        nonlocal best
+        if isinstance(node, list):
+            rows = [x for x in node if isinstance(x, dict)]
+            if len(rows) > len(best) and rows and all(
+                {"title", "artistName", "duration"} <= set(r) for r in rows
+            ):
+                best = rows
+            for v in node:
+                walk(v)
+        elif isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+
+    walk(blob)
+    return [
+        {
+            "title": t["title"],
+            "artist": t["artistName"],
+            "duration_ms": t["duration"],
+            **({"composer": t["composer"]} if t.get("composer") else {}),
+        }
+        for t in best
+    ]
+
+
 def playlist_id(url: str) -> str:
     """The pl.* identifier from a playlist URL."""
     m = re.search(r"/(pl\.[A-Za-z0-9_-]+)", url)
@@ -180,21 +229,38 @@ def main() -> int:
         entry = parse(url, page)
         if entry is None:
             continue
+        tracks = find_tracks(page)
 
         pid = entry["apple_music_id"] or slugify(entry["title"])
-        target = CONTENT_DIR / f"{slugify(entry['title'])}.md"
+        # A page bundle, so the tracks can travel beside the page as a resource
+        # rather than inside its frontmatter. Three hundred is comfortable in
+        # YAML; a few thousand is not, and the limit is not worth discovering
+        # from a build failure.
+        bundle = CONTENT_DIR / slugify(entry["title"])
+        bundle.mkdir(parents=True, exist_ok=True)
+        target = bundle / "index.md"
+        tracks_file = bundle / "tracks.json"
         # The date is when this playlist was first seen. Apple does not publish
         # one for user playlists, and inventing a new one on every run would
         # reorder the section for no reason.
         first_seen = state.get(pid, {}).get("date", now)
         body = frontmatter(entry, first_seen)
 
-        if target.exists() and target.read_text(encoding="utf-8") == body:
+        tracks_body = json.dumps({"tracks": tracks}, indent=2, ensure_ascii=False) + "\n"
+        unchanged = (
+            target.exists()
+            and target.read_text(encoding="utf-8") == body
+            and tracks_file.exists()
+            and tracks_file.read_text(encoding="utf-8") == tracks_body
+        )
+        if unchanged:
             state[pid] = {"date": first_seen, "path": str(target)}
             continue
 
         was = target.exists()
         target.write_text(body, encoding="utf-8")
+        tracks_file.write_text(tracks_body, encoding="utf-8")
+        log.info("  %d tracks", len(tracks))
         state[pid] = {"date": first_seen, "path": str(target)}
         log.info("  %s: %s", "Updated" if was else "Added", target)
         updated += was
